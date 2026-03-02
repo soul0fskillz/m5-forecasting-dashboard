@@ -22,6 +22,7 @@
 > Built in **2 weeks** by **Krishna Sonji** and **Shweta Bankar**
 
 [![GitHub](https://img.shields.io/badge/GitHub-Thir13een-181717?style=flat-square&logo=github)](https://github.com/Thir13een)
+[![GitHub](https://img.shields.io/badge/GitHub-shwetabankar54-181717?style=flat-square&logo=github)](https://github.com/shwetabankar54)
 
 </div>
 
@@ -459,5 +460,7 @@ Built in **2 weeks** by
 **Krishna Sonji** &nbsp;·&nbsp; **Shweta Bankar**
 
 [![GitHub](https://img.shields.io/badge/GitHub-Thir13een-181717?style=flat-square&logo=github)](https://github.com/Thir13een)
+&nbsp;
+[![GitHub](https://img.shields.io/badge/GitHub-shwetabankar54-181717?style=flat-square&logo=github)](https://github.com/shwetabankar54)
 
 </div>
