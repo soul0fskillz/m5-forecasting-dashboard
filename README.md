@@ -28,6 +28,19 @@
 
 ---
 
+<div align="center">
+
+| | |
+|:---:|:---:|
+| **58 million** training rows | **30,490** SKUs forecasted |
+| **4** LightGBM models | **9–12 hrs** total training time |
+| **RMSSE 0.60** average accuracy | **28-day** rolling forecast horizon |
+| **3** US states · 10 stores | **End-to-end** in 2 weeks |
+
+</div>
+
+---
+
 ## What is this?
 
 This project applies machine learning to the real-world **M5 Forecasting** dataset — Walmart retail sales data spanning **10 stores** across California, Texas, and Wisconsin — to build a fully operational inventory management system.
@@ -65,7 +78,7 @@ When approaching demand forecasting at scale, there are two common paths:
 | | LightGBM | DeepAR / TFT / N-BEATS |
 |---|---|---|
 | **GPU required** | No — runs on CPU | Yes — slow without GPU |
-| **Training time** | Minutes | Hours |
+| **Training time** | 9–12 hrs (58M rows, 4 models) | Days at this scale |
 | **Inference speed** | Milliseconds | Seconds |
 | **Model size** | ~200–325 MB per horizon | Often larger |
 | **Tabular features** | Excellent — native | Awkward to integrate |
@@ -76,6 +89,27 @@ When approaching demand forecasting at scale, there are two common paths:
 The M5 competition itself validated this — the top-ranked public solutions heavily used **gradient boosting (LightGBM / XGBoost)**, not deep learning. For high-volume, high-dimensionality retail tabular data with rich feature engineering, tree-based models consistently match or beat transformers — with a fraction of the infrastructure cost.
 
 Our choice: **LightGBM with a direct multi-horizon strategy**.
+
+---
+
+### Data Scale & Preprocessing
+
+Before a single model could be trained, the raw M5 dataset required extensive preprocessing to construct a training-ready feature matrix.
+
+The M5 dataset contains daily sales for 30,490 items across 10 stores over ~5.4 years (1,941 days). After melting the wide-format sales matrix into long format, joining calendar features, price data, SNAP flags, and event indicators, and then computing all lag and rolling window features **per item**, the resulting training dataset grew to:
+
+```
+30,490 items  ×  ~1,900 training days  =  ~58,000,000 rows
+```
+
+Each row carries over 30 features — lags (1–364 days), rolling means and standard deviations across 5 window sizes, cyclical time encodings, price signals, and event flags.
+
+**This scale introduced several engineering challenges:**
+
+- **Memory** — the full feature matrix at 58M rows × 30+ float32 features approaches ~7 GB. Loading it naively crashes on most machines. We used `.parquet` with selective column loading (`pd.read_parquet(..., columns=[...])`) and `float32` dtypes to keep memory under control.
+- **Lag computation** — computing `y_lag_364` (a 364-day lookback) across 30,490 grouped time series requires careful `groupby().shift()` operations. A naive loop would take hours; vectorised pandas operations kept it feasible.
+- **Lookahead prevention** — all rolling features are computed on `y_lag_1` (yesterday's sales), not the current day's value, ensuring zero data leakage into any target horizon.
+- **Training time** — each of the 4 LightGBM models trained on 58M rows with thousands of trees. Total training time across all 4 models: **9–12 hours**.
 
 ---
 
@@ -426,6 +460,37 @@ m5-forecasting-dashboard/
 ├── .env.example                    # Environment variable template
 └── README.md
 ```
+
+---
+
+## Engineering Highlights
+
+This project was deliberately built to demonstrate end-to-end ML engineering — not just model training, but the full journey from raw data to a production-ready application.
+
+### What makes this non-trivial
+
+**Scale** — 58 million training rows across 30,490 time series. Most ML tutorials work with thousands of rows. Handling 58M rows requires deliberate choices around memory management, vectorised operations, and file formats (Parquet over CSV, float32 over float64).
+
+**No data leakage** — every rolling feature is computed on `y_lag_1` (the previous day's sales), not the current day. This is a common mistake in time series ML that inflates validation scores. We enforced strict temporal discipline throughout.
+
+**Efficient multi-horizon design** — instead of training 28 models (one per forecast day), we designed a 4-anchor system that covers the full 28-day horizon with linear interpolation. This reduced training compute by 7× while preserving accuracy at key business horizons (day 1, week 1, week 2, month 1).
+
+**Business logic on top of ML** — raw predictions alone aren't useful to operations teams. We layered safety stock calculations (90% service level, square-root lead-time scaling), reorder point formulas, and priority classification (CRITICAL / WARNING / OK) on top of the model outputs to produce actionable recommendations.
+
+**Full-stack deployment** — the model doesn't live in a notebook. It's served via a FastAPI backend with SSE streaming, persisted in PostgreSQL, and presented through a Next.js dashboard with real-time AI chat. Every component runs in Docker Compose for one-command deployment.
+
+**LLM integration with context injection** — the AI assistant isn't generic. Its system prompt is dynamically built from live inventory data — store breakdowns, category summaries, top critical items — so it answers questions accurately about your specific stock state, not generic retail knowledge.
+
+### Skills demonstrated
+
+| Area | What's covered |
+|---|---|
+| **Machine Learning** | LightGBM, direct multi-step forecasting, time series feature engineering, RMSSE evaluation, safety stock modelling |
+| **Data Engineering** | 58M-row Parquet pipelines, grouped lag/rolling transforms, lookahead prevention, memory-efficient dtypes |
+| **Backend** | FastAPI, async Python, SSE streaming, file upload pipeline, PostgreSQL with SQLAlchemy |
+| **Frontend** | Next.js 14 App Router, TypeScript, React state management, SSE client, inline data visualisation |
+| **AI/LLM** | Groq API, dynamic system prompt construction, streaming token output, reasoning-block filtering |
+| **DevOps** | Docker Compose multi-service orchestration, environment variable management, model artifact hosting |
 
 ---
 
