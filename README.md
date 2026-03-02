@@ -41,6 +41,10 @@
 
 ---
 
+![Dashboard](assets/dashboard.jpg)
+
+---
+
 ## What is this?
 
 This project applies machine learning to the real-world **M5 Forecasting** dataset (Walmart retail sales across California, Texas, and Wisconsin) to build a fully operational inventory management system across 10 stores and 30,490 products.
