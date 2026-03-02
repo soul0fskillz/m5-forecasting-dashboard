@@ -43,7 +43,7 @@
 
 ## What is this?
 
-This project applies machine learning to the real-world **M5 Forecasting** dataset — Walmart retail sales data spanning **10 stores** across California, Texas, and Wisconsin — to build a fully operational inventory management system.
+This project applies machine learning to the real-world **M5 Forecasting** dataset (Walmart retail sales across California, Texas, and Wisconsin) to build a fully operational inventory management system across 10 stores and 30,490 products.
 
 Given historical sales data, the system:
 - Predicts demand for the next **1, 7, 14, and 28 days** per SKU using LightGBM
@@ -59,7 +59,7 @@ Given historical sales data, the system:
 | Feature | Description |
 |---|---|
 | **Inventory Dashboard** | Sortable, filterable grid of all 30,490 SKUs with priority status |
-| **Inline Forecast View** | Click any row — 28-day demand chart + key metrics expand inline |
+| **Inline Forecast View** | Click any row to see a 28-day demand chart and key metrics inline |
 | **AI Inventory Assistant** | Chat with Qwen3-32B, pre-loaded with live inventory context |
 | **CSV / Parquet Upload** | Upload new sales data to re-run the full pipeline |
 | **Safety Stock Calculation** | Per-SKU reorder quantities accounting for demand volatility |
@@ -67,57 +67,51 @@ Given historical sales data, the system:
 
 ---
 
-## The Model — Why LightGBM?
+## The Model
 
-### LightGBM vs. DeepAR / Transformers
+### Why LightGBM over DeepAR and Transformers?
 
-When approaching demand forecasting at scale, there are two common paths:
-
-**Deep learning models** like DeepAR, Temporal Fusion Transformer (TFT), and N-BEATS are often the first instinct. They can learn complex temporal patterns and handle uncertainty natively. But they come with significant trade-offs:
+When approaching demand forecasting at scale, deep learning models like DeepAR, Temporal Fusion Transformer (TFT), and N-BEATS are often the first instinct. They can learn complex temporal patterns but come with real trade-offs at this scale:
 
 | | LightGBM | DeepAR / TFT / N-BEATS |
 |---|---|---|
-| **GPU required** | No — runs on CPU | Yes — slow without GPU |
+| **GPU required** | No, runs on CPU | Yes, very slow without GPU |
 | **Training time** | 9–12 hrs (58M rows, 4 models) | Days at this scale |
 | **Inference speed** | Milliseconds | Seconds |
 | **Model size** | ~200–325 MB per horizon | Often larger |
-| **Tabular features** | Excellent — native | Awkward to integrate |
+| **Tabular features** | Native and excellent | Awkward to integrate |
 | **External regressors** | Easy | Complex |
 | **Interpretability** | Feature importance built-in | Black box |
 | **Retail tabular data** | Consistently strong | Often doesn't outperform GBDT |
 
-The M5 competition itself validated this — the top-ranked public solutions heavily used **gradient boosting (LightGBM / XGBoost)**, not deep learning. For high-volume, high-dimensionality retail tabular data with rich feature engineering, tree-based models consistently match or beat transformers — with a fraction of the infrastructure cost.
-
-Our choice: **LightGBM with a direct multi-horizon strategy**.
+The M5 competition validated this. Top-ranked public solutions heavily used gradient boosting (LightGBM / XGBoost), not deep learning. For high-volume retail tabular data with rich feature engineering, tree-based models consistently match or beat transformers at a fraction of the infrastructure cost.
 
 ---
 
-### Data Scale & Preprocessing
+### Data Scale and Preprocessing
 
-Before a single model could be trained, the raw M5 dataset required extensive preprocessing to construct a training-ready feature matrix.
+Before any model could be trained, the raw M5 dataset required extensive preprocessing to build a training-ready feature matrix.
 
-The M5 dataset contains daily sales for 30,490 items across 10 stores over ~5.4 years (1,941 days). After melting the wide-format sales matrix into long format, joining calendar features, price data, SNAP flags, and event indicators, and then computing all lag and rolling window features **per item**, the resulting training dataset grew to:
+The M5 dataset contains daily sales for 30,490 items across 10 stores over roughly 5.4 years (1,941 days). After melting the wide-format sales matrix into long format, joining calendar features, price data, SNAP flags, and event indicators, and computing all lag and rolling window features per item, the training dataset grew to:
 
 ```
 30,490 items  ×  ~1,900 training days  =  ~58,000,000 rows
 ```
 
-Each row carries over 30 features — lags (1–364 days), rolling means and standard deviations across 5 window sizes, cyclical time encodings, price signals, and event flags.
+Each row carries over 30 features including lags (1–364 days), rolling means and standard deviations across 5 window sizes, cyclical time encodings, price signals, and event flags.
 
-**This scale introduced several engineering challenges:**
+This scale introduced several real engineering challenges:
 
-- **Memory** — the full feature matrix at 58M rows × 30+ float32 features approaches ~7 GB. Loading it naively crashes on most machines. We used `.parquet` with selective column loading (`pd.read_parquet(..., columns=[...])`) and `float32` dtypes to keep memory under control.
-- **Lag computation** — computing `y_lag_364` (a 364-day lookback) across 30,490 grouped time series requires careful `groupby().shift()` operations. A naive loop would take hours; vectorised pandas operations kept it feasible.
-- **Lookahead prevention** — all rolling features are computed on `y_lag_1` (yesterday's sales), not the current day's value, ensuring zero data leakage into any target horizon.
-- **Training time** — each of the 4 LightGBM models trained on 58M rows with thousands of trees. Total training time across all 4 models: **9–12 hours**.
+- **Memory.** The full feature matrix at 58M rows × 30+ float32 features approaches 7 GB. Loading it naively crashes on most machines. We used `.parquet` with selective column loading (`pd.read_parquet(..., columns=[...])`) and `float32` dtypes throughout.
+- **Lag computation.** Computing `y_lag_364` (a 364-day lookback) across 30,490 grouped time series requires vectorised `groupby().shift()` operations. A naive loop would run for hours.
+- **Lookahead prevention.** All rolling features are computed on `y_lag_1` (the previous day's sales), not the current value, ensuring zero data leakage into any target horizon.
+- **Training time.** Each of the 4 LightGBM models trained on the full 58M rows. Total training time across all 4 models was **9–12 hours**.
 
 ---
 
 ### Direct Multi-Horizon Forecasting with Anchor Points
 
-The naive approach to 28-day forecasting is to train **28 separate models** — one per forecast day. That's expensive, slow to train, and hard to maintain.
-
-Instead, we trained **4 anchor models** at strategically chosen horizons:
+Training 28 separate models (one per forecast day) would be expensive and hard to maintain. Instead, we trained **4 anchor models** at strategically chosen horizons:
 
 ```
 Day 1       Day 7       Day 14      Day 28
@@ -128,37 +122,37 @@ Day 1       Day 7       Day 14      Day 28
  Model 1    Model 2    Model 3    Model 4
 ```
 
-Each model is a **direct forecaster** — it predicts the actual sales value at that specific future day (`y_t+h`), not a cumulative total. The anchor horizons (1, 7, 14, 28) were chosen to align with natural demand cycles: daily fluctuation, weekly rhythm, bi-weekly patterns, and monthly trends.
+Each model is a direct forecaster that predicts the actual sales value at that specific future day (`y_t+h`). The anchor horizons (1, 7, 14, 28) were chosen to align with natural demand cycles: daily fluctuation, weekly rhythm, bi-weekly patterns, and monthly trends.
 
-**For the 24 intermediate days** between anchors, we do not apply naive linear interpolation directly on the raw predictions. Raw predictions encode a day-of-week seasonal pattern — Mondays sell differently from Saturdays. Interpolating raw values would mix trend and seasonality, producing distorted intermediate forecasts.
+For the 24 intermediate days between anchors, we do not apply naive linear interpolation on the raw predictions. Raw predictions encode the day-of-week seasonal pattern (Mondays sell differently from Saturdays), so interpolating them directly would mix trend and seasonality and produce distorted forecasts.
 
-Instead, we apply a three-step **deseason → interpolate → reseason** procedure using empirically learned per-item weekday weights.
+Instead we apply a three-step **deseason → interpolate → reseason** procedure using empirically learned per-item weekday weights.
 
-#### Step 1 — Learn per-item day-of-week weights
+#### Step 1: Learn per-item day-of-week weights
 
-For each item, look back 56 days from the forecast origin and compute the mean sales per weekday, then normalise by the item's overall mean:
+For each item, look back 56 days from the forecast origin and compute mean sales per weekday, then normalise by the item's overall mean:
 
 $$w_{i,k} = \frac{\bar{y}_{i,k}}{\bar{y}_i + \epsilon}, \quad k \in \{0,1,...,6\}$$
 
-where $\bar{y}_{i,k}$ is the mean sales for item $i$ on weekday $k$ over the past 56 days, and $\bar{y}_i$ is the item's overall mean across all weekdays. $\epsilon = 10^{-6}$ prevents division by zero.
+where $\bar{y}_{i,k}$ is the mean sales for item $i$ on weekday $k$ over the past 56 days, and $\bar{y}_i$ is the overall mean across all weekdays. $\epsilon = 10^{-6}$ prevents division by zero.
 
-This gives a **7-element shape vector per item** — the relative demand multiplier for each day of week. For example, a FOODS item might have $w_{\text{Saturday}} = 1.8$ and $w_{\text{Tuesday}} = 0.7$, reflecting a weekend spike.
+This produces a 7-element shape vector per item representing the relative demand multiplier for each day of week. A FOODS item might have $w_{\text{Saturday}} = 1.8$ and $w_{\text{Tuesday}} = 0.7$, reflecting a weekend spike.
 
-#### Step 2 — Deseason the anchor predictions
+#### Step 2: Deseason the anchor predictions
 
-Each anchor prediction captures both the underlying trend and the seasonality of that specific anchor day. To interpolate only the trend, we remove the weekday effect from each anchor:
+Each anchor prediction captures both the underlying trend and the seasonality of that specific day. To interpolate only the trend, divide out the weekday effect:
 
 $$\tilde{y}_{i,a} = \frac{\hat{y}_{i,a}}{w_{i,\text{wday}(a)}}$$
 
-where $\hat{y}_{i,a}$ is the model's prediction at anchor position $a \in \{0, 6, 13, 27\}$ (i.e. days 1, 7, 14, 28), and $w_{i,\text{wday}(a)}$ is the weekday weight for the day of week that anchor falls on. This yields $\tilde{y}_{i,a}$ — the **deseasoned base trend** at each anchor.
+where $\hat{y}_{i,a}$ is the model prediction at anchor position $a \in \{0, 6, 13, 27\}$ (days 1, 7, 14, 28), and $w_{i,\text{wday}(a)}$ is the weekday weight for the day of week that anchor falls on. This gives $\tilde{y}_{i,a}$, the deseasoned base trend at each anchor.
 
-#### Step 3 — Interpolate the base trend
+#### Step 3: Interpolate the base trend
 
-With seasonality removed, the base trend between any two adjacent anchors $a$ and $b$ is assumed to evolve linearly:
+With seasonality removed, the base trend between adjacent anchors $a$ and $b$ is interpolated linearly:
 
 $$\tilde{y}_{i,d} = \tilde{y}_{i,a}\,(1 - r) + \tilde{y}_{i,b}\,r, \qquad r = \frac{d - a}{b - a}$$
 
-for every intermediate day $d \in [a, b]$, applied across the three segments:
+for every intermediate day $d \in [a, b]$, applied across three segments:
 
 | Segment | Anchor positions (0-indexed) |
 |---|---|
@@ -166,24 +160,22 @@ for every intermediate day $d \in [a, b]$, applied across the three segments:
 | Days 7 → 14 | $a = 6,\ b = 13$ |
 | Days 14 → 28 | $a = 13,\ b = 27$ |
 
-#### Step 4 — Reseason the interpolated values
+#### Step 4: Reseason the interpolated values
 
-Finally, multiply each day's deseasoned estimate back by its own weekday weight:
+Multiply each day's deseasoned estimate back by its own weekday weight:
 
 $$\hat{y}_{i,d} = \tilde{y}_{i,d} \times w_{i,\text{wday}(d)}$$
 
-This reapplies the correct seasonal multiplier for each specific future date, giving a forecast that respects both the trend trajectory across 28 days and the weekly demand rhythm of each individual item. Note that for anchor days themselves, deseasoning and reseasoning cancel — the final value always equals the original model prediction.
-
-**The result** is a complete 28-day forecast per item — not a flat interpolation, but a seasonality-aware curve built from 4 trained models and 56 days of per-item weekday behaviour.
+This reapplies the correct seasonal multiplier for each future date, giving a forecast that respects both the trend trajectory and the weekly demand rhythm of each item. For anchor days, deseasoning and reseasoning cancel out so the final value always equals the original model prediction.
 
 ```
                    anchor             interpolated (base trend × weekday weight)
                      ↓                          ↓
 Day  1 (Mon):  0.94               (h=1 anchor, returns exactly to model prediction)
-Day  2 (Tue):  base_trend × 0.65  (Tue is a slow day — weight pulls forecast down)
+Day  2 (Tue):  base_trend × 0.65  (slow day, weight pulls forecast down)
 Day  3 (Wed):  base_trend × 0.72
 Day  4 (Thu):  base_trend × 0.75
-Day  5 (Fri):  base_trend × 1.20  (Fri picks up — weight lifts forecast)
+Day  5 (Fri):  base_trend × 1.20  (picks up toward weekend)
 Day  6 (Sat):  base_trend × 1.85  (weekend spike fully restored by weight)
 Day  7 (Sun):  1.21               (h=7 anchor, returns exactly to model prediction)
 ...
@@ -196,7 +188,7 @@ Day 28:        1.17               (h=28 anchor)
 
 ### Model Performance
 
-RMSSE (Root Mean Squared Scaled Error) measures forecast accuracy relative to a naive baseline. A score below 1.0 means the model beats the naive forecast.
+RMSSE (Root Mean Squared Scaled Error) measures accuracy relative to a naive baseline. A score below 1.0 means the model beats the naive forecast.
 
 | Horizon | RMSSE |
 |---|---|
@@ -206,7 +198,7 @@ RMSSE (Root Mean Squared Scaled Error) measures forecast accuracy relative to a 
 | Day 28 | **0.66** |
 | **Average (4 anchors)** | **0.60** |
 
-The anchor points individually achieve strong RMSSE (0.52–0.66). The interpolated intermediate days are not separately evaluated — their error depends on how linearly demand evolves between anchors. In practice, this is a reasonable assumption for weekly retail patterns.
+The 4 anchor points individually achieve strong RMSSE (0.52–0.66). Intermediate days are not separately evaluated since they come from the interpolation procedure rather than direct model predictions.
 
 ---
 
@@ -214,7 +206,7 @@ The anchor points individually achieve strong RMSSE (0.52–0.66). The interpola
 
 Each model is trained on a rich set of features computed from historical sales:
 
-**Lag features** — direct past sales values used to capture autocorrelation:
+**Lag features** capture autocorrelation at different time scales:
 
 | Lag | Captures |
 |---|---|
@@ -226,7 +218,7 @@ Each model is trained on a rich set of features computed from historical sales:
 | 182 days | Half-year seasonality |
 | 364 days | Year-over-year patterns |
 
-**Rolling window features** — computed on `y_lag_1` to prevent data leakage:
+**Rolling window features** are computed on `y_lag_1` to prevent data leakage:
 
 | Feature | Windows |
 |---|---|
@@ -235,17 +227,17 @@ Each model is trained on a rich set of features computed from historical sales:
 | Rolling median | 28 days |
 | Zero-sale rate | 28 days |
 | Non-zero sale count | 28 days |
-| Days since last sale | — |
+| Days since last sale | N/A |
 
-**Calendar features** — cyclical encodings (sin/cos) to avoid ordinal artifacts:
+**Calendar features** use sin/cos cyclical encodings to avoid ordinal artifacts:
 - Day of week: `wday_sin`, `wday_cos`
 - Month: `month_sin`, `month_cos`
 
-**Event and external features:**
-- SNAP days (US government food assistance — drives FOODS spikes)
+**External features:**
+- SNAP days (US government food assistance program, drives FOODS category spikes)
 - Event type: Cultural, National, Religious, Sporting, None
 
-**Inventory calculations** (post-inference):
+**Inventory calculations applied post-inference:**
 ```
 safety_stock    = Z × σ_lead_time           (Z = 1.282, 90% service level)
 sigma_lead_time = σ_daily × √(lead_time)    (lead_time = 7 days)
@@ -259,7 +251,7 @@ order_qty       = max(0, demand_28d + safety_stock − current_stock)
 
 ### Dashboard Overview
 
-When you open the app at `http://localhost:3000`, you land on the **Inventory Dashboard**:
+Open the app at `http://localhost:3000` to land on the Inventory Dashboard:
 
 ```
 ┌─────────────────────────────────────────────────────┬──────────────────────┐
@@ -274,22 +266,22 @@ When you open the app at `http://localhost:3000`, you land on the **Inventory Da
 │  [Filters: Store | Category | Status | Search]  [Sort by: Units to Order] │
 ├──────────┬────────────┬──────────┬──────────┬────────┬──────────┬──────────┤
 │ Item ID  │  Store     │ Category │ Dept     │ Status │ Order Qty│Days Left │
-│ (click to expand)                                                          │
-└──────────────────────────────────────────────────────────────────────────-─┘
+│ (click any row to expand)                                                  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Filtering and Sorting
 
 Use the filter bar to narrow down items:
-- **Store** — select one or more stores (CA-1, CA-2, CA-3, CA-4, TX-1, TX-2, TX-3, WI-1, WI-2, WI-3)
+- **Store** — CA-1, CA-2, CA-3, CA-4, TX-1, TX-2, TX-3, WI-1, WI-2, WI-3
 - **Category** — FOODS, HOBBIES, HOUSEHOLD
 - **Status** — CRITICAL (order now), WARNING (order soon), OK (well stocked)
-- **Search** — type an item ID prefix to find specific SKUs
+- **Search** — type any item ID prefix to find specific SKUs
 - **Sort** — by Units to Order, Days Until Stockout, or Item ID
 
 ### Inline Row Expansion
 
-Click any row to expand it inline:
+Click any row to expand it inline and see the full forecast:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -306,23 +298,22 @@ Click any row to expand it inline:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-- Click the same row again (or the ✕) to collapse
-- Click a different row to switch
+Click the same row again (or the ✕) to collapse. Clicking a different row switches to that item.
 
 ### AI Chat Assistant
 
-The right panel hosts an AI assistant pre-loaded with your live inventory data. You can ask:
+The right panel hosts an AI assistant pre-loaded with your live inventory data. Try asking:
 
 > *"What are the top 10 most urgent items to order?"*
 > *"Which store needs the most attention right now?"*
 > *"Break down critical items by category"*
 > *"Which items will stock out within 3 days?"*
 
-The assistant uses the full inventory context — store breakdowns, category summaries, top critical items — to give accurate, structured answers with tables.
+The assistant has access to store breakdowns, category summaries, and top critical items, so answers are specific to your actual stock state.
 
 ### Uploading New Sales Data
 
-Click **Upload sales data** in the top-right corner to re-run the full forecasting pipeline with fresh data. The backend will:
+Click **Upload sales data** in the top-right corner to re-run the pipeline with fresh data. The backend will:
 1. Parse and validate your CSV
 2. Run feature engineering (lags, rolling windows, calendar features)
 3. Run all 4 LightGBM models
@@ -335,7 +326,7 @@ Upload takes **30–60 seconds** depending on the number of rows.
 
 ## CSV File Format
 
-The upload endpoint accepts `.csv` or `.parquet` files. Your file **must contain these columns**:
+The upload endpoint accepts `.csv` or `.parquet` files. Your file must contain these columns:
 
 | Column | Type | Description | Example |
 |---|---|---|---|
@@ -370,16 +361,16 @@ HOBBIES_1_001_CA_1,d_1913,0.0,4.49,0,0,0.782,0.623,0.5,0.866,0,0,0,1,0,0
 ```python
 import numpy as np
 
-# Day of week (0=Monday … 6=Sunday)
+# Day of week (0=Monday, 6=Sunday)
 wday_sin = np.sin(2 * np.pi * weekday / 7)
 wday_cos = np.cos(2 * np.pi * weekday / 7)
 
-# Month (1=January … 12=December)
+# Month (1=January, 12=December)
 month_sin = np.sin(2 * np.pi * month / 12)
 month_cos = np.cos(2 * np.pi * month / 12)
 ```
 
-**Tip:** Include at least the **last 364 days** of data per item for full lag coverage. The feature engineering pipeline uses `min_periods=1` so shorter histories will still work, but lag features will be `NaN` for early rows — this can reduce forecast accuracy for items with limited history.
+Include at least the **last 364 days** of data per item for full lag coverage. Shorter histories still work (the pipeline uses `min_periods=1`) but lag features will be `NaN` for early rows, which reduces forecast accuracy.
 
 ---
 
@@ -434,7 +425,7 @@ docker compose up --build
 | **Dashboard** | http://localhost:3000 |
 | **API docs** | http://localhost:8000/docs |
 
-First startup takes ~2–3 minutes while Docker builds the images and loads all 4 LightGBM models into memory.
+First startup takes 2–3 minutes while Docker builds the images and loads all 4 LightGBM models into memory.
 
 ---
 
@@ -467,7 +458,7 @@ m5-forecasting-dashboard/
 │   ├── app/
 │   │   ├── layout.tsx              # Root layout — header + chat panel sidebar
 │   │   ├── globals.css             # Global styles + keyframes
-│   │   ├── page.tsx                # Redirect → /inventory
+│   │   ├── page.tsx                # Redirect to /inventory
 │   │   └── inventory/
 │   │       └── page.tsx            # Main inventory page
 │   ├── components/
@@ -500,23 +491,21 @@ m5-forecasting-dashboard/
 
 ## Engineering Highlights
 
-This project was deliberately built to demonstrate end-to-end ML engineering — not just model training, but the full journey from raw data to a production-ready application.
+This project covers the full ML engineering stack, not just model training.
 
-### What makes this non-trivial
+**Scale.** 58 million training rows across 30,490 time series. Handling this requires deliberate choices around memory management, vectorised operations, and file formats (Parquet over CSV, float32 over float64). Most ML projects don't operate at this row count.
 
-**Scale** — 58 million training rows across 30,490 time series. Most ML tutorials work with thousands of rows. Handling 58M rows requires deliberate choices around memory management, vectorised operations, and file formats (Parquet over CSV, float32 over float64).
+**No data leakage.** Every rolling feature is computed on `y_lag_1` (the previous day's sales), not the current day. This is a common mistake in time series ML that inflates validation scores. We enforced strict temporal discipline throughout the pipeline.
 
-**No data leakage** — every rolling feature is computed on `y_lag_1` (the previous day's sales), not the current day. This is a common mistake in time series ML that inflates validation scores. We enforced strict temporal discipline throughout.
+**Efficient multi-horizon design.** Instead of training 28 models, we designed a 4-anchor system using a seasonality-aware deseason → interpolate → reseason procedure. This gave a 7× reduction in training compute while preserving accuracy at key business horizons (day 1, week 1, week 2, month 1).
 
-**Efficient multi-horizon design** — instead of training 28 models (one per forecast day), we designed a 4-anchor system that covers the full 28-day horizon using a seasonality-aware deseason → interpolate → reseason procedure. This reduced training compute by 7× while preserving accuracy at key business horizons (day 1, week 1, week 2, month 1).
+**Business logic on top of ML.** Raw model predictions alone aren't useful to an operations team. We layered safety stock calculations (90% service level, square-root lead-time scaling), reorder point formulas, and priority classification (CRITICAL / WARNING / OK) on top of the model outputs to produce actionable recommendations.
 
-**Business logic on top of ML** — raw predictions alone aren't useful to operations teams. We layered safety stock calculations (90% service level, square-root lead-time scaling), reorder point formulas, and priority classification (CRITICAL / WARNING / OK) on top of the model outputs to produce actionable recommendations.
+**Full-stack deployment.** The model isn't a notebook. It's served via a FastAPI backend with SSE streaming, persisted in PostgreSQL, and presented through a Next.js dashboard with real-time AI chat. Every component runs in Docker Compose for one-command deployment.
 
-**Full-stack deployment** — the model doesn't live in a notebook. It's served via a FastAPI backend with SSE streaming, persisted in PostgreSQL, and presented through a Next.js dashboard with real-time AI chat. Every component runs in Docker Compose for one-command deployment.
+**LLM context injection.** The AI assistant's system prompt is dynamically built from live inventory data including store breakdowns, category summaries, and top critical items. It answers questions about your actual stock state, not generic retail knowledge.
 
-**LLM integration with context injection** — the AI assistant isn't generic. Its system prompt is dynamically built from live inventory data — store breakdowns, category summaries, top critical items — so it answers questions accurately about your specific stock state, not generic retail knowledge.
-
-### Skills demonstrated
+### Skills Demonstrated
 
 | Area | What's covered |
 |---|---|
@@ -549,7 +538,7 @@ This project was deliberately built to demonstrate end-to-end ML engineering —
 
 ### Infrastructure
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?style=flat-square&logo=docker)](https://www.docker.com/)
-[![GitHub](https://img.shields.io/badge/GitHub-Releases%20%28Models%29-181717?style=flat-square&logo=github)](https://github.com/Thir13een/m5-forecasting-dashboard/releases)
+[![GitHub](https://img.shields.io/badge/GitHub-Releases%20(Models)-181717?style=flat-square&logo=github)](https://github.com/Thir13een/m5-forecasting-dashboard/releases)
 
 ---
 
